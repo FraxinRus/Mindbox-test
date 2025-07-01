@@ -1,0 +1,27 @@
+# Начальная версия манифеста
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-deployment
+  # Хоть и не было сказано, решил указать namespace для дальнейшей изоляции
+  namespace: development 
+  labels:
+    app: web-app
+spec:
+  replicas: 4  # Создаем 4 пода под пиковую нагрузку
+  strategy:
+    type: RollingUpdate # RollingUpdate для плавного обновления
+    rollingUpdate:
+      maxUnavailable: 0 # Запрещаем отключать под, пока не поднимется его замена
+      maxSurge: 1 # Поднимаем по одному новому поду
+  # Под считается "ready" только через 10 секунд, чтобы успел проинициализироваться
+  minReadySeconds: 10 
+  selector:
+    matchLabels:
+      app: web-app
+  spec:
+  containers:
+    - name: web-app
+      image: web-app:latest
+      ports:
+        - containerPort: 8080
