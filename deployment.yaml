@@ -1,4 +1,4 @@
-# Начальная версия манифеста
+# 2-я версия манифеста
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,7 +8,8 @@ metadata:
   labels:
     app: web-app
 spec:
-  replicas: 4  # Создаем 4 пода под пиковую нагрузку
+  # Создаем 4 пода под пиковую нагрузку, потом будет настроено горизонтальное масштабирование
+  replicas: 4 
   strategy:
     type: RollingUpdate # RollingUpdate для плавного обновления
     rollingUpdate:
@@ -19,9 +20,21 @@ spec:
   selector:
     matchLabels:
       app: web-app
-  spec:
-  containers:
-    - name: web-app
-      image: web-app:latest
-      ports:
-        - containerPort: 8080
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+        - name: web-app
+          # Образ берем с указанием registry, если используется локальный
+          image: company.registry/web-app:v1.0.1 # Явно указан тег для предсказуемости и контроля
+          ports:
+            - containerPort: 8080 # Настраивается в соответствии с приложением и политикой компании
+          resources:
+            requests: # Минимальный запрос на ресурсы поставил по данным о стандартном потреблении
+              cpu: "100m"
+              memory: 128Mi
+            limits: # Лимиты выставлены для ограничения ресурсов контейнера \
+              cpu: "700m" # \ с учетом высокого потребления на первые запросы (требует тестирования)
+              memory: 256Mi
