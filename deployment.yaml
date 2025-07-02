@@ -23,6 +23,21 @@ spec:
       labels:
         app: web-app
     spec:
+      affinity: # Настраиваем правила размещения новых Pod (нам нужно равномерно размещать в 3 зонах на 5 нодах)
+        podAntiAffinity: # Используем AntiAffinity для указания необходимых правил
+          preferredDuringSchedulingIgnoredDuringExecution: # Ставим не жесткие ограничения
+          - weight: 100 # Будет сверяться сначала с этим правилом
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: web-app
+              topologyKey: "topology.kubernetes.io/zone" # Новые поды сначала будут размещаться в разных зонах
+          - weight: 50 # Если предыдущее невозможно выполнить, будет выполнено это
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: web-app
+              topologyKey: "kubernetes.io/hostname" # Новые поды будут стараться размещаться на нодах, где еще нет подов
       containers:
       - name: web-app
         # Образ берем с указанием registry, если используется локальный
