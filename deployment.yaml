@@ -8,15 +8,13 @@ metadata:
   labels:
     app: web-app
 spec:
-  # Создаем 4 пода под пиковую нагрузку, потом будет настроено горизонтальное масштабирование
-  replicas: 4 
+  # Ставим 2 реплики Pod, количество будет менятся при помощи HPA в зависимости от нагрузки(указано далее в манифесте)
+  replicas: 2 
   strategy:
     type: RollingUpdate # RollingUpdate для плавного обновления
     rollingUpdate:
-      maxUnavailable: 0 # Запрещаем отключать под, пока не поднимется его замена
-      maxSurge: 1 # Поднимаем по одному новому поду
-  # Под считается "ready" только через 10 секунд, чтобы успел проинициализироваться
-  minReadySeconds: 10 
+      maxUnavailable: 0 # Запрещаем отключать Pod, пока не поднимется его замена
+      maxSurge: 1 # Поднимаем по одному новому Pod
   selector:
     matchLabels:
       app: web-app
@@ -26,15 +24,81 @@ spec:
         app: web-app
     spec:
       containers:
-        - name: web-app
-          # Образ берем с указанием registry, если используется локальный
-          image: company.registry/web-app:v1.0.1 # Явно указан тег для предсказуемости и контроля
-          ports:
-            - containerPort: 8080 # Настраивается в соответствии с приложением и политикой компании
-          resources:
-            requests: # Минимальный запрос на ресурсы поставил по данным о стандартном потреблении
-              cpu: "100m"
-              memory: 128Mi
-            limits: # Лимиты выставлены для ограничения ресурсов контейнера \
-              cpu: "700m" # \ с учетом высокого потребления на первые запросы (требует тестирования)
-              memory: 256Mi
+      - name: web-app
+        # Образ берем с указанием registry, если используется локальный
+        image: company.registry/web-app:v1.0.1 # Явно указан тег для предсказуемости и контроля
+        ports: # Настраиваются в соответствии с приложением и политикой компании
+        - name: liveness-port
+          containerPort: 8080
+        resources:
+          requests: # Минимальный запрос на ресурсы 
+            cpu: "150m" # В среднем приложению нужно 100m, поставил с запасом +50m, чтобы не вызывать ложный автоскейлинг
+            memory: 192Mi # Аналогично +50% от среднего потребления
+          limits: # Лимиты выставлены для ограничения ресурсов контейнера \
+            cpu: "600m" # \ с учетом высокого потребления на первые запросы (требует тестирования)
+            memory: 256Mi
+        startupProbe: # Probe для проверки успешности старта контейнера
+          httpGet: # Настраивается в зависимости от приложения
+            path: /healthz
+            port: liveness-port
+          periodSeconds: 2
+          failureThreshold: 10
+        readinessProbe: # Probe для проверки успешности инициализации приложения
+          httpGet:
+            path: /healthz
+            port: liveness-port
+          initialDelaySeconds: 5 # Задержка в 5 секунд перед проверкой(по условию инициализация требует 5-10с)
+          periodSeconds: 3
+          failureThreshold: 5 # В худшем случае после запуска на проверку старта и инициализации уйдет 40 секунд
+        livenessProbe: # Probe для постоянной проверки жизнеспособности контейнера после запуска
+          httpGet: # Настраивается в зависимости от приложения
+            path: /healthz
+            port: liveness-port
+          periodSeconds: 10 # Проверка каждые 10 секунд (default)
+          failureThreshold: 5
+          # restarPolicy не задавал, т.к. нужно Always(стоит по умолчанию)
+
+---
+# В задании было указано написать решение в одном манифесте, поэтому здесь же описывается HPA
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler # Используем HPA для горизонтального автоскейлинга
+metadata:
+  name: app-hpa
+  namespace: development
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: app-deployment
+  minReplicas: 2 # 1 реплики было бы достаточно для нагрузки ночью, но поставил 2 для повышения отказоустойчивости
+  maxReplicas: 6 # Хоть и 4 пода справляются с пиковой нагрузкой, поставил 6 для возможных всплесков
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80 # От request cpu 150m это будет 120m, что +20% от средней нагрузки
+  - type: Resource
+    resource:
+      name: memory # На всякий случай добавлена метрика памяти, хоть она и достаточно стабильна во время работы
+      target:
+        type: Utilization
+        averageUtilization: 80 # От request memory 192mi это ~150mi, что +20% от средней нагрузки
+  behavior: # Дополнительные настройки политик скейлинга
+    scaleUp:
+      stabilizationWindowSeconds: 60 # ВременнОе окно для того, чтобы убедиться, что нагрузка постоянно возросла. \
+      # \ Надеюсь, это решает проблему с ложным автоскейлингом во время возрастания нагрузки на CPU при первых запросах. \
+      # \ В ином случае, предложил бы переместить в отдельный файл \
+      # \ и при применении манифеста добавлять ключ --horizontal-pod-autoscaler-initial-readiness-delay
+      policies:
+      - type: Pods
+        value: 2 # Ограничил максимальное количество поднимаемых подов в минуту с расчетом, что нагрузка растет не резко
+        periodSeconds: 60
+        # selectPolicy не ставлю, т.к. кластер небольшой -> в процентах нет смысла указывать, поэтому только одна политика
+    scaleDown:
+      stabilizationWindowSeconds: 300 # 5 минут, чтобы убедиться, что нагрузка точно снизилась
+      policies:
+      - type: Pods
+        value: 1 # Указан 1 под в минуту для избежания резкого падения производительности
+        periodSeconds: 60
