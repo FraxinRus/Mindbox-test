@@ -12,7 +12,7 @@ spec:
   strategy:
     type: RollingUpdate # RollingUpdate для плавного обновления
     rollingUpdate:
-      maxUnavailable: 0 # Запрещаем отключать Pod, пока не поднимется его замена
+      maxUnavailable: 1 # Поставил 1, чтобы при обновлении не требовалось больше ресурсов
       maxSurge: 1 # Поднимаем по одному новому Pod
   selector:
     matchLabels:
@@ -22,16 +22,17 @@ spec:
       labels:
         app: web-app
     spec:
-      affinity: # Настраиваем правила размещения новых Pod (нам нужно равномерно размещать в 3 зонах на 5 нодах)
-        podAntiAffinity: # Используем AntiAffinity для указания необходимых правил
+      topologySpreadConstraints: # SpreadConstraints для распределения по зонам
+        - maxSkew: 1
+          topologyKey: "topology.kubernetes.io/zone"
+          whenUnsatisfiable: ScheduleAnyway # Мягкое ограничение
+          labelSelector:
+            matchLabels:
+              app: web-app
+      affinity:
+        podAntiAffinity: # Используем AntiAffinity для размещения по нодам
           preferredDuringSchedulingIgnoredDuringExecution: # Ставим не жесткие ограничения
-          - weight: 100 # Будет сверяться сначала с этим правилом
-            podAffinityTerm:
-              labelSelector:
-                matchLabels:
-                  app: web-app
-              topologyKey: "topology.kubernetes.io/zone" # Новые поды сначала будут размещаться в разных зонах
-          - weight: 50 # Если предыдущее невозможно выполнить, будет выполнено это
+          - weight: 100
             podAffinityTerm:
               labelSelector:
                 matchLabels:
@@ -46,8 +47,10 @@ spec:
           containerPort: 8080
         resources:
           requests: # Минимальный запрос на ресурсы 
-            cpu: "150m" # В среднем приложению нужно 100m, поставил с запасом +50m, чтобы не вызывать ложный автоскейлинг
-            memory: 192Mi # Аналогично +50% от среднего потребления
+            cpu: "100m" # В среднем приложению нужно 100m
+            memory: 128Mi # Аналогично для памяти 128Mi
+          limits: # Лимит по процессору не ставим
+            memory: 256Mi
         startupProbe: # Probe для проверки успешности старта контейнера
           httpGet: # Настраивается в зависимости от приложения
             path: /healthz
@@ -82,20 +85,15 @@ spec:
     kind: Deployment
     name: app-deployment
   minReplicas: 2 # 1 реплики было бы достаточно для нагрузки ночью, но поставил 2 для повышения отказоустойчивости
-  maxReplicas: 6 # Хоть и 4 пода справляются с пиковой нагрузкой, поставил 6 для возможных всплесков
+  maxReplicas: 5 # Хоть и 4 пода справляются с пиковой нагрузкой, поставил 5 для возможных всплесков (тем более, что 5 нод)
   metrics:
   - type: Resource
     resource:
       name: cpu
       target:
         type: Utilization
-        averageUtilization: 80 # От request cpu 150m это будет 120m, что +20% от средней нагрузки
-  - type: Resource
-    resource:
-      name: memory # На всякий случай добавлена метрика памяти, хоть она и достаточно стабильна во время работы
-      target:
-        type: Utilization
-        averageUtilization: 80 # От request memory 192mi это ~150mi, что +20% от средней нагрузки
+        targetAverageUtilization: 100 # Приводим к среднему использованию процессора - 100m
+    # Решил не отслеживать по памяти, т.к. она "всегда" постоянна
   behavior: # Дополнительные настройки политик скейлинга
     scaleUp:
       stabilizationWindowSeconds: 60 # ВременнОе окно для того, чтобы убедиться, что нагрузка постоянно возросла. \
